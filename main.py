@@ -1,6 +1,7 @@
 """
 main.py
 Master orchestrator for the Indian Stock News Intelligence Agent.
+Includes secure checks for Dalal Street Journal (DSJ) premium session credentials.
 """
 
 import os
@@ -38,11 +39,18 @@ IST    = pytz.timezone("Asia/Kolkata")
 
 
 def check_env_vars() -> bool:
-    required = ["GEMINI_API_KEY", "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"]
+    """Verifies all core integrations and credential vaults are present before running execution blocks."""
+    required = [
+        "GEMINI_API_KEY", 
+        "TELEGRAM_TOKEN", 
+        "TELEGRAM_CHAT_ID",
+        "DSJ_USER_ID",      # Secure credential check added
+        "DSJ_PASSWORD"      # Secure credential check added
+    ]
     missing  = [v for v in required if not os.environ.get(v)]
     if missing:
-        logger.error(f"Missing environment variables: {missing}")
-        logger.error("Set them in GitHub Secrets or your local .env file.")
+        logger.error(f"Missing environment variables or repository secrets: {missing}")
+        logger.error("Please add them under Settings -> Secrets and variables -> Actions in your GitHub repository.")
         return False
     return True
 
@@ -61,7 +69,7 @@ def main():
 
     os.makedirs("reports", exist_ok=True)
 
-    logger.info("\n[STEP 1] Fetching news from all sources...")
+    logger.info("\n[STEP 1] Fetching news from all sources (including authenticated premium feeds)...")
     all_news = fetch_all_news()
     if not all_news:
         logger.warning("No news fetched — all sources may be down. Exiting.")
@@ -100,22 +108,4 @@ def main():
 
     logger.info("\n[STEP 9] Saving report and sending Telegram...")
     report_path = save_markdown_report(md_content, date_str)
-    logger.info(f"  Report saved: {report_path}")
-
-    tg_ok = send_telegram(tg_messages)
-    if tg_ok:
-        logger.info("  Telegram sent successfully.")
-    else:
-        logger.warning("  Telegram delivery failed.")
-
-    logger.info("\n" + "=" * 60)
-    logger.info("  AGENT RUN COMPLETE")
-    logger.info(f"  List A (Surge):     {len(results['list_a'])} stocks")
-    logger.info(f"  List B (Long-term): {len(results['list_b'])} stocks")
-    logger.info(f"  List C (Negative):  {len(results['list_c'])} stocks")
-    logger.info(f"  Report:             {report_path}")
-    logger.info("=" * 60)
-
-
-if __name__ == "__main__":
-    main()
+    logger.info(f"  Report saved: {report_
