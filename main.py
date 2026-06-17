@@ -44,8 +44,8 @@ def check_env_vars() -> bool:
         "GEMINI_API_KEY", 
         "TELEGRAM_TOKEN", 
         "TELEGRAM_CHAT_ID",
-        "DSJ_USER_ID",      # Secure credential check added
-        "DSJ_PASSWORD"      # Secure credential check added
+        "DSJ_USER_ID",      
+        "DSJ_PASSWORD"      
     ]
     missing  = [v for v in required if not os.environ.get(v)]
     if missing:
@@ -108,4 +108,22 @@ def main():
 
     logger.info("\n[STEP 9] Saving report and sending Telegram...")
     report_path = save_markdown_report(md_content, date_str)
-    logger.info(f"  Report saved: {report_
+    logger.info(f"  Report saved: {report_path}")
+
+    tg_ok = send_telegram(tg_messages)
+    if tg_ok:
+        logger.info("  Telegram sent successfully.")
+    else:
+        logger.warning("  Telegram delivery failed.")
+
+    logger.info("\n" + "=" * 60)
+    logger.info("  AGENT RUN COMPLETE")
+    logger.info(f"  List A (Surge):     {len(results['list_a'])} stocks")
+    logger.info(f"  List B (Long-term): {len(results['list_b'])} stocks")
+    logger.info(f"  List C (Negative):  {len(results['list_c'])} stocks")
+    logger.info(f"  Report:             {report_path}")
+    logger.info("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
