@@ -1,12 +1,14 @@
 """
 stock_analyzer.py
-Advanced Multi-Factor Policy Analyzer & Supply Chain Engine.
+Advanced Multi-Factor Policy Analyzer, Supply Chain Proxy Engine, 
+and Multi-Timeframe Technical Validation Safeguard.
 """
 
 import os
 import json
 import time
 import logging
+import pandas as pd
 import yfinance as yf
 import google.generativeai as genai
 
@@ -15,6 +17,39 @@ logger = logging.getLogger(__name__)
 if "GEMINI_API_KEY" in os.environ:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 MODEL = genai.GenerativeModel("gemini-2.5-flash")
+
+
+def calculate_technical_metrics(df: pd.DataFrame) -> dict:
+    """Calculates RSI, EMAs, and Volume Z-scores to prevent overbought traps."""
+    metrics = {"rsi": 50.0, "ema_20": 0.0, "ema_50": 0.0, "volume_surge": False, "volume_ratio": 1.0}
+    if len(df) < 15:
+        return metrics
+
+    # 1. Exponential Moving Averages
+    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+    df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+    
+    # 2. Relative Strength Index (RSI 14)
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+    rs = gain / (loss + 1e-9)
+    rsi = 100 - (100 / (1 + rs))
+
+    # 3. Volume Surge Tracking (Current volume vs 20-day baseline average)
+    avg_vol = df['Volume'].iloc[-21:-1].mean() if len(df) > 21 else df['Volume'].mean()
+    curr_vol = df['Volume'].iloc[-1]
+    vol_ratio = curr_vol / (avg_vol + 1e-9)
+
+    metrics.update({
+        "rsi": round(rsi.iloc[-1], 2),
+        "ema_20": round(df['EMA_20'].iloc[-1], 2),
+        "ema_50": round(df['EMA_50'].iloc[-1], 2),
+        "volume_surge": bool(vol_ratio >= 1.5),
+        "volume_ratio": round(vol_ratio, 2)
+    })
+    return metrics
+
 
 def classify_and_score_news(raw_ingestion_payload: list[dict], weights: dict = None) -> list[dict]:
     if not raw_ingestion_payload:
@@ -82,8 +117,9 @@ Format:
         
     return compiled_insights
 
+
 def build_stock_lists(compiled_insights: list[dict], weights: dict = None) -> dict:
-    """Filters identified assets, adapting market cap filters dynamically for policy breakout groups."""
+    """Filters identified assets, applying structural multi-timeframe sanity criteria checks."""
     list_a, list_b, top_news = [], [], []
     seen = set()
 
@@ -94,40 +130,48 @@ def build_stock_lists(compiled_insights: list[dict], weights: dict = None) -> di
             
         try:
             tk = yf.Ticker(ticker)
-            hist = tk.history(period="5d") # Ultra-tight window to identify current baseline reference points
-            if hist.empty:
+            # Fetch a wider historical dataset window to compute indicators cleanly
+            hist = tk.history(period="6mo") 
+            if hist.empty or len(hist) < 30:
                 continue
                 
             curr_price = round(hist["Close"].iloc[-1], 2)
             info = tk.info
             mkt_cap = round(info.get("marketCap", 0) / 1e7, 2) if info.get("marketCap") else 0
             
-            # RE-ENGINEERED VOLATILITY OVERRIDE: Allow specialized small-caps to pass if backed by an institutional score >= 7
-            if mkt_cap < 500 and item.get("score", 5) < 7:
-                continue
-                
+            # Extract underlying data footprints
+            techs = calculate_technical_metrics(hist)
+            
+            # 🔴 RISK BARRIER 1: OVERBOUGHT HYPOCRITICAL EXTRACTION GUARDRAIL
+            # If RSI is structurally vertical, deduct point profiles and demote the priority index
+            final_score = item.get("score", 5)
+            if techs["rsi"] >= 78.0:
+                logger.warning(f"Preventing top-buy on overbought chart for {ticker} (RSI: {techs['rsi']}). Demoting scoring vector.")
+                final_score -= 2
+
             stock_record = {
                 "symbol": ticker,
                 "price": curr_price,
                 "market_cap": mkt_cap,
-                "reason": item["catalyst_reasoning"],
+                "reason": f"[RSI: {techs['rsi']} | Vol Ratio: {techs['volume_ratio']}x] {item['catalyst_reasoning']}",
                 "horizon": item["horizon"],
                 "origin_channel": item["channel"],
-                "score": item["score"]
+                "score": max(1, final_score)
             }
             
-            if item["strategy_type"] in ["SWING", "SME_MOMENTUM"]:
-                stock_record["target_zone"] = round(curr_price * 1.08, 1) # Propose clean 8% target breakout expectations
+            # Allocation Routing Strategy
+            if item["strategy_type"] in ["SWING", "SME_MOMENTUM"] and techs["rsi"] < 78.0:
+                stock_record["target_zone"] = round(curr_price * 1.08, 1)
                 list_a.append(stock_record)
             else:
                 list_b.append(stock_record)
                 
             top_news.append(item)
             seen.add(ticker)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Skipping asset metrics fetch on {ticker}: {e}")
             continue
 
-    # Sort choices by score to highlight the highest conviction ideas first
     list_a.sort(key=lambda x: x.get("score", 0), reverse=True)
     list_b.sort(key=lambda x: x.get("score", 0), reverse=True)
 
