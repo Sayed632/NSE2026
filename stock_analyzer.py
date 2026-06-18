@@ -49,10 +49,13 @@ Rules:
             # Call your configured Gemini Model instance (Ensure MODEL is defined globally in stock_analyzer.py)
             response = MODEL.generate_content(prompt)
             
-            # Clean up potential markdown wrapper wrappers cleanly on a single line
+            # Clean up markdown tags on safe, independent lines
             clean_text = response.text.strip()
-            clean_text = clean_text.replace("```json", "").replace("
-```JSON", "").replace("```", "").strip()
+            clean_text = clean_text.replace("```json", "")
+            clean_text = clean_text.replace("```JSON", "")
+            clean_text = clean_text.replace("
+```", "")
+            clean_text = clean_text.strip()
             
             if not clean_text or clean_text == "[]":
                 continue
