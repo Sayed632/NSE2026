@@ -1,151 +1,101 @@
 """
 news_fetcher.py
-Fetches news from NSE/BSE announcements, PIB, MoF, MHA,
-Economic Times and Moneycontrol via RSS and HTTP scraping.
+Multi-source ingestion engine capable of standard HTML parsing,
+macro statistic scraping, and fallback generic structural text dumps.
 """
 
-import requests
-import feedparser
-from bs4 import BeautifulSoup
-import time
+import os
 import logging
-from datetime import datetime, timedelta
-import pytz
+import requests
+from bs4 import BeautifulSoup
+import re
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-IST = pytz.timezone("Asia/Kolkata")
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
+# Highly diversified asset endpoints provided by the user
+DSIJ_STREAM_CHANNELS = {
+    "Swing_Trading":       "https://insights.dsij.in/insight/trending-news/swing-trading",
+    "Penny_Stocks":        "https://insights.dsij.in/insight/trending-news/penny-stocks",
+    "Multibagger_News":    "https://insights.dsij.in/insight/trending-news/multibagger",
+    "SME_Emerging":        "https://insights.dsij.in/insight/trending-news/sme",
+    "Quarterly_Results":   "https://insights.dsij.in/insight/trending-news/quarterly-results",
+    "FII_DII_Flows":       "https://insights.dsij.in/markets/market-statistics/fii-dii",
+    "Broker_Research":     "https://insights.dsij.in/markets/reports/broker-reports",
+    "Guru_Investors":      "https://insights.dsij.in/markets/reports/guru-investors",
+    "Sprinting_Unicorns":  "https://insights.dsij.in/screener_details/operationtype/sprintingunicorns",
+    "Mindshare_Intel":     "https://insights.dsij.in/insight/trending-news/mindshare",
+    "Top_Gainers":         "https://insights.dsij.in/markets/market-statistics/top-gainers",
+    "Personal_Finance":    "https://insights.dsij.in/insight/trending-news/personal-finance",
+    "Experts_Speak":       "https://insights.dsij.in/insight/knowledge/experts-speak",
+    "Multibagger_Screen":  "https://insights.dsij.in/screener_details/operationtype/multibaggers",
+    "Corporate_Actions":   "https://insights.dsij.in/insight/trending-news/bonus-stock-split"
 }
 
-# ── RSS feeds (reliable, no scraping needed) ─────────────────────────────────
-RSS_FEEDS = {
-    "Economic Times Markets": "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
-    "Economic Times Economy":  "https://economictimes.indiatimes.com/news/economy/rssfeeds/1373380680.cms",
-    "Moneycontrol Markets":    "https://www.moneycontrol.com/rss/MCtopnews.xml",
-    "PIB":                     "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=3",
-    "Google News India Market":"https://news.google.com/rss/search?q=india+stock+market+NSE+BSE&hl=en-IN&gl=IN&ceid=IN:en",
-    "Google News Policy":      "https://news.google.com/rss/search?q=india+government+policy+economy+budget&hl=en-IN&gl=IN&ceid=IN:en",
-    "Google News Defence":     "https://news.google.com/rss/search?q=india+defence+ministry+contract+order&hl=en-IN&gl=IN&ceid=IN:en",
-}
-
-# ── BSE announcements (XML feed) ─────────────────────────────────────────────
-BSE_ANN_URL = (
-    "https://api.bseindia.com/BseIndiaAPI/api/AnnGetAnnouncementXML/w"
-    "?strCat=-1&strPrevDate={}&strScrip=&strSearch=P&strToDate={}&strType=C&subcategory=-1"
-)
-
-# ── NSE corporate filings RSS ─────────────────────────────────────────────────
-NSE_CORP_RSS = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
-
-
-def _parse_rss(name: str, url: str, max_items: int = 15) -> list[dict]:
-    """Parse an RSS/Atom feed and return a list of news dicts."""
-    items = []
+def get_authenticated_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+    })
+    
+    username = os.environ.get("DSJ_USER_ID")
+    password = os.environ.get("DSJ_PASSWORD")
+    login_url = "https://www.dsij.in/LoginPage"
+    
+    payload = {"txtUser": username, "txtPassword": password, "btnLogin": "Login"}
     try:
-        feed = feedparser.parse(url)
-        for entry in feed.entries[:max_items]:
-            pub = entry.get("published", entry.get("updated", ""))
-            items.append({
-                "source": name,
-                "title":  entry.get("title", "").strip(),
-                "summary": entry.get("summary", entry.get("description", "")).strip()[:500],
-                "url":    entry.get("link", ""),
-                "published": pub,
-            })
+        session.get("https://www.dsij.in/", timeout=10)
+        session.post(login_url, data=payload, timeout=12)
+        return session
     except Exception as e:
-        logger.warning(f"RSS fetch failed [{name}]: {e}")
-    return items
+        logger.error(f"Authentication failure: {e}")
+    return session
 
-
-def fetch_rss_news() -> list[dict]:
-    """Fetch all RSS feeds and return combined list."""
-    all_news = []
-    for name, url in RSS_FEEDS.items():
-        logger.info(f"Fetching RSS: {name}")
-        items = _parse_rss(name, url)
-        all_news.extend(items)
-        time.sleep(0.5)
-    logger.info(f"Total RSS items fetched: {len(all_news)}")
-    return all_news
-
-
-def fetch_bse_announcements() -> list[dict]:
-    """Fetch today's BSE corporate announcements via API."""
-    items = []
-    try:
-        today = datetime.now(IST).strftime("%Y%m%d")
-        yesterday = (datetime.now(IST) - timedelta(days=1)).strftime("%Y%m%d")
-        url = BSE_ANN_URL.format(yesterday, today)
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "lxml-xml")
-            for row in soup.find_all("row")[:30]:
-                title   = row.find("NEWSSUB")
-                company = row.find("SLONGNAME")
-                scrip   = row.find("SCRIP_CD")
-                items.append({
-                    "source":    "BSE Announcement",
-                    "title":     (title.text if title else "").strip(),
-                    "summary":   f"Company: {company.text if company else ''} | Scrip: {scrip.text if scrip else ''}",
-                    "url":       "https://www.bseindia.com/corporates/ann.html",
-                    "published": datetime.now(IST).isoformat(),
-                })
-        logger.info(f"BSE announcements fetched: {len(items)}")
-    except Exception as e:
-        logger.warning(f"BSE fetch failed: {e}")
-    return items
-
-
-def fetch_pib_policy_news() -> list[dict]:
-    """Fetch PIB press releases via scraping as fallback."""
-    items = []
-    try:
-        resp = requests.get(
-            "https://pib.gov.in/allRel.aspx",
-            headers=HEADERS, timeout=15
-        )
-        soup = BeautifulSoup(resp.text, "html.parser")
-        for link in soup.select("ul.rel-list li a")[:20]:
-            items.append({
-                "source":    "PIB Government",
-                "title":     link.get_text(strip=True),
-                "summary":   "",
-                "url":       "https://pib.gov.in" + link.get("href", ""),
-                "published": datetime.now(IST).isoformat(),
-            })
-        logger.info(f"PIB items fetched: {len(items)}")
-    except Exception as e:
-        logger.warning(f"PIB scrape failed: {e}")
-    return items
-
+def process_page_to_unified_text(html_content: str) -> str:
+    """
+    Layout-Agnostic text extractor. Removes script/style clutter, leaving
+    clean semantic text tables and paragraphs intact for Gemini context analysis.
+    """
+    soup = BeautifulSoup(html_content, "html.parser")
+    
+    # Prune non-analytical components immediately
+    for element in soup(["script", "style", "nav", "footer", "header"]):
+        element.extract()
+        
+    # Grab structural tables (e.g., FII/DII data rows or Guru tables)
+    table_strings = []
+    for table in soup.find_all("table"):
+        rows = []
+        for row in table.find_all("tr"):
+            cells = [cell.text.strip().replace("\n", " ") for cell in row.find_all(["td", "th"])]
+            rows.append(" | ".join(cells))
+        table_strings.append("\n".join(rows))
+        table.extract() # Remove to prevent duplicating text down below
+        
+    # Harvest remaining paragraph blocks and structural items
+    text_content = soup.get_text(separator="\n")
+    lines = [line.strip() for line in text_content.splitlines() if len(line.strip()) > 20]
+    
+    # Return structured consolidation
+    return "\n--- TABLE DATA ---\n".join(table_strings) + "\n--- BODY TEXT ---\n" + "\n".join(lines[:120])
 
 def fetch_all_news() -> list[dict]:
-    """
-    Master function — fetches from all sources and
-    returns a deduplicated, combined list of news items.
-    """
-    all_news = []
-    all_news.extend(fetch_rss_news())
-    all_news.extend(fetch_bse_announcements())
-    all_news.extend(fetch_pib_policy_news())
-
-    # Deduplicate by title
-    seen = set()
-    unique_news = []
-    for item in all_news:
-        key = item["title"].lower()[:80]
-        if key and key not in seen:
-            seen.add(key)
-            unique_news.append(item)
-
-    logger.info(f"Total unique news items: {len(unique_news)}")
-    return unique_news
-
+    """Loops through all structural web configurations and packs them as an raw data package."""
+    session = get_authenticated_session()
+    raw_ingestion_payload = []
+    
+    for channel, url in DSIJ_STREAM_CHANNELS.items():
+        logger.info(f"Ingesting channel data pipeline: [{channel}]")
+        try:
+            response = session.get(url, timeout=15)
+            if response.status_code == 200:
+                # Layout-agnostic consolidation
+                extracted_data = process_page_to_unified_text(response.text)
+                raw_ingestion_payload.append({
+                    "channel": channel,
+                    "url": url,
+                    "raw_data_dump": extracted_data
+                })
+        except Exception as e:
+            logger.error(f"Error harvesting data from stream {channel}: {e}")
+            
+    return raw_ingestion_payload
