@@ -1,5 +1,8 @@
 import json
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 def classify_and_score_news(raw_ingestion_payload: list[dict], weights: dict) -> list[dict]:
     """
@@ -43,21 +46,25 @@ Rules:
 - Do not output any markdown code blocks, backticks (```), or conversational preambles.
 """
         try:
-            # Call your configured Gemini Model instance
+            # Call your configured Gemini Model instance (Ensure MODEL is defined globally in stock_analyzer.py)
             response = MODEL.generate_content(prompt)
-            clean_json = response.text.replace("
-```json", "").replace("```", "").strip()
             
-            if not clean_json or clean_json == "[]":
+            # Clean up potential markdown wrapper wrappers cleanly on a single line
+            clean_text = response.text.strip()
+            clean_text = clean_text.replace("```json", "").replace("
+```JSON", "").replace("```", "").strip()
+            
+            if not clean_text or clean_text == "[]":
                 continue
                 
-            parsed_insights = json.loads(clean_json)
+            parsed_insights = json.loads(clean_text)
             for insight in parsed_insights:
                 # Append origin tracker metadata parameters so downstream filters know the source
                 insight["channel"] = stream["channel"]
                 compiled_recommendations.append(insight)
         except Exception as e:
             logger.warning(f"Failed decoding stream payload tracking data for {stream['channel']}: {e}")
+            
         time.sleep(1) # Controlled API loop pacing to avoid rate limiting
         
     return compiled_recommendations
