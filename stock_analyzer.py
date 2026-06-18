@@ -1,8 +1,22 @@
+import os
 import json
 import time
 import logging
+import yfinance as yf
+import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
+
+# Initialize model components safely
+if "GEMINI_API_KEY" in os.environ:
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+MODEL = genai.GenerativeModel("gemini-1.5-flash")
+
+# Default learning fallback configuration matrix
+SECTOR_SEED_STOCKS = {}
+
+def load_self_learning_weights():
+    return {}
 
 def classify_and_score_news(raw_ingestion_payload: list[dict], weights: dict) -> list[dict]:
     """
@@ -14,7 +28,6 @@ def classify_and_score_news(raw_ingestion_payload: list[dict], weights: dict) ->
         
     compiled_recommendations = []
     
-    # Process each complex data channel stream layout-agnostically
     for stream in raw_ingestion_payload:
         prompt = f"""You are a senior hedge fund systems analyst running deep telemetry checks on Indian stock updates.
 Analyze this raw data dump extracted from the DSIJ portal channel: [{stream['channel']}].
@@ -43,14 +56,12 @@ Expected Output Format (Strict JSON Array):
 Rules:
 - Append .NS to every ticker symbol.
 - If no actionable stock can be confirmed from the payload text dump, return an empty JSON array: [].
-- Do not output any markdown code blocks, backticks (```), or conversational preambles.
+- Do not output any markdown code blocks, backticks, or conversational preambles.
 """
         try:
-            # Call your configured Gemini Model instance
             response = MODEL.generate_content(prompt)
             
             # --- SMARTPHONE SAFE CLEANUP DESERIALIZER ---
-            # Splits text by line and filters out any lines containing backticks or language markers
             raw_lines = response.text.splitlines()
             clean_lines = []
             for line in raw_lines:
@@ -62,19 +73,75 @@ Rules:
                 clean_lines.append(strip_line)
                 
             clean_text = "".join(clean_lines).strip()
-            # ─────────────────────────────────────────────
             
             if not clean_text or clean_text == "[]":
                 continue
                 
             parsed_insights = json.loads(clean_text)
             for insight in parsed_insights:
-                # Append origin tracker metadata parameters so downstream filters know the source
                 insight["channel"] = stream["channel"]
                 compiled_recommendations.append(insight)
         except Exception as e:
             logger.warning(f"Failed decoding stream payload tracking data for {stream['channel']}: {e}")
             
-        time.sleep(1) # Controlled API loop pacing to avoid rate limiting
+        time.sleep(1)
         
     return compiled_recommendations
+
+
+def build_stock_lists(compiled_recommendations: list[dict], weights: dict) -> dict:
+    """Processes asset selections across standard market cap and volatility filters."""
+    list_a = []  # Short-Term / Swing / SME Momentum
+    list_b = []  # Core Structural Compounders / Multibaggers
+    list_c = []  # Negative / Headwinds / Shorts
+
+    seen_tickers = set()
+
+    for item in compiled_recommendations:
+        ticker = item.get("ticker")
+        if not ticker or ticker in seen_tickers:
+            continue
+            
+        try:
+            tk = yf.Ticker(ticker)
+            hist = tk.history(period="6mo")
+            if hist.empty:
+                continue
+                
+            info = tk.info
+            curr_price = round(hist["Close"].iloc[-1], 2)
+            mkt_cap = round(info.get("marketCap", 0) / 1e7, 2) if info.get("marketCap") else 0
+            
+            # Skip extreme micro-caps unless matching specific risk streams
+            if mkt_cap < 1000 and item["strategy_type"] not in ["SPECULATIVE_PENNY", "SME_MOMENTUM"]:
+                continue
+                
+            processed_stock = {
+                "symbol": ticker,
+                "price": curr_price,
+                "market_cap": mkt_cap,
+                "reason": item["catalyst_reasoning"],
+                "horizon": item["horizon"],
+                "origin_channel": item["channel"]
+            }
+            
+            if item["strategy_type"] in ["SWING", "SME_MOMENTUM"]:
+                processed_stock["target_zone"] = round(curr_price * 1.08, 1)
+                list_a.append(processed_stock)
+            elif item["strategy_type"] in ["CORE_BUY", "SPECULATIVE_PENNY"]:
+                processed_stock["horizon_target"] = "12 - 36 Months"
+                list_b.append(processed_stock)
+            elif item["strategy_type"] == "MACRO_SHORT":
+                list_c.append(processed_stock)
+                
+            seen_tickers.add(ticker)
+            time.sleep(0.1)
+        except Exception:
+            continue
+
+    return {
+        "list_a": list_a[:10],
+        "list_b": list_b[:10],
+        "list_c": list_c[:5],
+        "top_news": compiled_recommendations[:5]
+    }
