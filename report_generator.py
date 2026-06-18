@@ -1,213 +1,138 @@
 """
 report_generator.py
-Builds Telegram message and markdown GitHub report.
+Formats market intelligence outputs into structural markdown/text cards
+and broadcasts payloads securely via the Telegram Bot API.
 """
 
 import os
 import logging
-import asyncio
-from datetime import datetime
-import pytz
-from telegram import Bot
-from telegram.constants import ParseMode
+import requests
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-IST = pytz.timezone("Asia/Kolkata")
-MAX_TELEGRAM_MSG = 4000
+
+def build_telegram_message(structured_lists: dict, run_time_str: str) -> list[str]:
+    """
+    Transforms structured dataset metrics into cleanly segmented text alerts.
+    Explicitly branded for distinct repository identification in busy feeds.
+    """
+    chunks = []
+    
+    # Header Segment with Unique Repository Identifier Tags
+    header = [
+        "🤖 *[NSE 2026 SCANNER]*",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "🗞 *MARKET INTELLIGENCE REPORT*",
+        f"📅 `{run_time_str}`",
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+    ]
+    
+    # Processing Top Macro News Signals
+    news_section = ["📰 *TOP ANNOUNCEMENTS / POLICIES:*"]
+    top_news = structured_lists.get("top_news", [])
+    if not top_news:
+        news_section.append("  • _No structural macro signals captured in this cycle._")
+    else:
+        for idx, item in enumerate(top_news, 1):
+            clean_reason = item.get("catalyst_reasoning", "Context unassigned").replace("_", "\\_").replace("*", "\\*")
+            news_section.append(f"*{idx}. {item.get('ticker','UNKNOWN')}* (Score: `{item.get('score', 5)}/10`)")
+            news_section.append(f"   📢 _{clean_reason}_\n")
+            
+    # Processing Short-Term Swing Candidates (List A)
+    list_a_section = ["🚀 *LIST A: SHORT-TERM SWING / MOMENTUM*"]
+    list_a = structured_lists.get("list_a", [])
+    if not list_a:
+        list_a_section.append("  • _No high-conviction breakout setups qualified today._\n")
+    else:
+        for stock in list_a:
+            clean_reason = stock.get("reason", "No reason").replace("_", "\\_").replace("*", "\\*")
+            list_a_section.append(f"🔹 *{stock['symbol']}* | Price: `₹{stock['price']}`")
+            list_a_section.append(f"   🎯 Target Zone: `₹{stock.get('target_zone', 'N/A')}`")
+            list_a_section.append(f"   ⚡ Catalyst: _{clean_reason}_\n")
+
+    # Processing Structural Compounders (List B)
+    list_b_section = ["📈 *LIST B: LONG-TERM INVESTMENT / WEALTH*"]
+    list_b = structured_lists.get("list_b", [])
+    if not list_b:
+        list_b_section.append("  • _No structural long-term trend catalysts detected._\n")
+    else:
+        for stock in list_b:
+            clean_reason = stock.get("reason", "No reason").replace("_", "\\_").replace("*", "\\*")
+            list_b_section.append(f"🔸 *{stock['symbol']}* | Price: `₹{stock['price']}`")
+            list_b_section.append(f"   ⏳ Horizon: `{stock.get('horizon_target', '12-36 Months')}`")
+            list_b_section.append(f"   💡 Investment Thesis: _{clean_reason}_\n")
+
+    # Footer Disclaimer and Repository Closing Signature
+    footer = [
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "⚠️ _AI structural data analytics only. Not official SEBI registered investment advice._",
+        "📡 *[Source Node: NSE2026/Main Engine]*"
+    ]
+
+    # Combine data components into a clean string array
+    full_body = "\n".join(header + news_section + ["---"] + list_a_section + ["---"] + list_b_section + footer)
+    
+    # Telegram messages have a hard 4096-character limit. Chunk if exceeded.
+    if len(full_body) <= 4000:
+        chunks.append(full_body)
+    else:
+        # Fallback segmentation split logic if data runs extremely long
+        chunks.append("\n".join(header + news_section))
+        chunks.append("\n".join(list_a_section + ["---"] + list_b_section + footer))
+        
+    return chunks
 
 
-def _fmt_inr(crore_val) -> str:
+def build_markdown_report(structured_lists: dict, run_time_str: str, date_str: str) -> str:
+    """Compiles deep Markdown files for structural logging within GitHub workspaces."""
+    report = [
+        f"# Market Intelligence Analysis Report - {date_str}",
+        f"**Run Execution Timestamp:** {run_time_str} (IST)",
+        "",
+        "## 🚀 High-Conviction Selections Matrix",
+        "| Asset Ticker | Entry Price | Market Cap (Cr) | Horizon Profile | Signal Source Feed |",
+        "| :--- | :--- | :--- | :--- | :--- |"
+    ]
+    
+    for stock in structured_lists.get("list_a", []) + structured_lists.get("list_b", []):
+        report.append(f"| {stock['symbol']} | ₹{stock['price']} | {stock['market_cap']} | {stock['horizon']} | {stock.get('origin_channel','Fallback Stream')} |")
+        
+    return "\n".join(report)
+
+
+def save_markdown_report(report_content: str, date_str: str):
+    """Flashes local analytical reports onto the git runner's workspace disk."""
     try:
-        val = float(crore_val)
-        if val >= 100000:
-            return f"₹{val/100000:.1f}L Cr"
-        elif val >= 1000:
-            return f"₹{val/1000:.1f}K Cr"
-        return f"₹{val:.0f} Cr"
-    except Exception:
-        return "N/A"
-
-
-def build_telegram_message(results: dict, run_time: str) -> list[str]:
-    list_a   = results.get("list_a", [])
-    list_b   = results.get("list_b", [])
-    list_c   = results.get("list_c", [])
-    top_news = results.get("top_news", [])
-
-    lines = []
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🗞 *MARKET INTELLIGENCE REPORT*")
-    lines.append(f"📅 {run_time} IST")
-    lines.append("🤖 NSE2026 Stock News Agent")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━\n")
-
-    if top_news:
-        lines.append("📰 *TOP NEWS TRIGGERS:*")
-        for i, n in enumerate(top_news[:4], 1):
-            score = n.get("score", 0)
-            emoji = "🔴" if score >= 8 else "🟡" if score >= 6 else "🟢"
-            title = n.get("title", "")[:90]
-            lines.append(f"{emoji} {i}\\. {title}")
-            lines.append(f"    _Score: {score}/10_")
-        lines.append("")
-
-    if list_a:
-        lines.append("🚀 *SURGE CANDIDATES \\(Short\\-Term\\):*")
-        for s in list_a:
-            sym    = s['symbol'].replace('.NS','')
-            price  = s['price']
-            vol    = s['vol_ratio']
-            tgt    = s.get('target_zone','')
-            reason = s.get('reason','')[:70]
-            lines.append(f"• *{sym}* @ ₹{price} | Vol: {vol}x | Target: ₹{tgt}")
-            lines.append(f"  _{reason}_")
-        lines.append("")
-    else:
-        lines.append("🚀 *SURGE CANDIDATES:* No high\\-conviction picks today\n")
-
-    if list_b:
-        lines.append("📈 *LONG\\-TERM BUY LIST:*")
-        for s in list_b:
-            sym    = s['symbol'].replace('.NS','')
-            price  = s['price']
-            mktcap = _fmt_inr(s.get('market_cap', 0))
-            revg   = s.get('rev_growth', 'N/A')
-            thesis = s.get('thesis','')[:70]
-            lines.append(f"• *{sym}* @ ₹{price} | Cap: {mktcap} | Growth: {revg}%")
-            lines.append(f"  _{thesis}_")
-        lines.append("")
-    else:
-        lines.append("📈 *LONG\\-TERM BUY LIST:* No qualifying picks today\n")
-
-    if list_c:
-        lines.append("🔴 *AVOID / NEGATIVE IMPACT:*")
-        for s in list_c:
-            sym    = s['symbol'].replace('.NS','')
-            reason = s.get('reason','')[:70]
-            lines.append(f"• *{sym}* — _{reason}_")
-        lines.append("")
-
-    lines.append("⚠️ _AI research only\\. Not SEBI registered advice\\._")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-
-    full_text = "\n".join(lines)
-    chunks    = []
-    current   = ""
-    for line in lines:
-        if len(current) + len(line) + 1 > MAX_TELEGRAM_MSG:
-            chunks.append(current)
-            current = line
-        else:
-            current += "\n" + line
-    if current:
-        chunks.append(current)
-
-    return chunks if chunks else [full_text]
-
-
-def build_markdown_report(results: dict, run_time: str, date_str: str) -> str:
-    list_a   = results.get("list_a", [])
-    list_b   = results.get("list_b", [])
-    list_c   = results.get("list_c", [])
-    top_news = results.get("top_news", [])
-
-    lines = []
-    lines.append(f"# Market Intelligence Report — {date_str}\n")
-    lines.append(f"**Generated:** {run_time} IST\n")
-    lines.append("---\n")
-
-    lines.append("## Top News Triggers\n")
-    if top_news:
-        lines.append("| # | Source | Headline | Score |")
-        lines.append("|---|--------|----------|-------|")
-        for i, n in enumerate(top_news, 1):
-            src   = n.get("source","")[:20]
-            title = n.get("title","")[:80]
-            score = n.get("score", 0)
-            lines.append(f"| {i} | {src} | {title} | {score}/10 |")
-    lines.append("")
-
-    lines.append("## List A — Surge Candidates\n")
-    if list_a:
-        lines.append("| Symbol | Price | Vol Ratio | Target | Reason |")
-        lines.append("|--------|-------|-----------|--------|--------|")
-        for s in list_a:
-            sym    = s['symbol'].replace('.NS','')
-            lines.append(
-                f"| **{sym}** | ₹{s['price']} | {s['vol_ratio']}x "
-                f"| ₹{s.get('target_zone','')} | {s.get('reason','')[:60]} |"
-            )
-    else:
-        lines.append("_No surge candidates today._\n")
-
-    lines.append("\n## List B — Long-Term Buys\n")
-    if list_b:
-        lines.append("| Symbol | Price | Market Cap | Rev Growth | Thesis |")
-        lines.append("|--------|-------|-----------|-----------|--------|")
-        for s in list_b:
-            sym = s['symbol'].replace('.NS','')
-            lines.append(
-                f"| **{sym}** | ₹{s['price']} | {_fmt_inr(s.get('market_cap',0))} "
-                f"| {s.get('rev_growth','N/A')}% | {s.get('thesis','')[:60]} |"
-            )
-    else:
-        lines.append("_No long-term candidates today._\n")
-
-    lines.append("\n## List C — Avoid\n")
-    if list_c:
-        lines.append("| Symbol | Reason |")
-        lines.append("|--------|--------|")
-        for s in list_c:
-            sym = s['symbol'].replace('.NS','')
-            lines.append(f"| {sym} | {s.get('reason','')[:80]} |")
-    else:
-        lines.append("_No negative impact stocks today._\n")
-
-    lines.append("\n---")
-    lines.append("> AI research only. Not SEBI registered advice.")
-
-    return "\n".join(lines)
-
-
-def save_markdown_report(content: str, date_str: str) -> str:
-    os.makedirs("reports", exist_ok=True)
-    filename = f"reports/report_{date_str}.md"
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(content)
-    logger.info(f"Markdown report saved: {filename}")
-    return filename
-
-
-async def _send_telegram_async(messages: list[str]) -> bool:
-    token   = os.environ.get("TELEGRAM_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-    if not token or not chat_id:
-        logger.warning("Telegram credentials not set.")
-        return False
-
-    bot = Bot(token=token)
-    try:
-        for msg in messages:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=msg,
-                parse_mode=ParseMode.MARKDOWN_V2,
-            )
-            await asyncio.sleep(1)
-        logger.info(f"Sent {len(messages)} Telegram message(s).")
-        return True
+        os.makedirs("reports", exist_ok=True)
+        file_path = f"reports/Report_{date_str}.md"
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(report_content)
+        logger.info(f"Local Markdown backup generated successfully at: {file_path}")
     except Exception as e:
-        logger.error(f"Telegram send failed: {e}")
+        logger.error(f"Failed to flash Markdown tracking report to git environment: {e}")
+
+
+def send_telegram(message_chunks: list[str]):
+    """Transmits formatted reporting chunks to the targeted Telegram chat node."""
+    token = os.environ.get("TELEGRAM_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    
+    if not token or not chat_id:
+        logger.warning("Telegram credentials absent from environments. Broadcast skipped.")
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    
+    for chunk in message_chunks:
+        payload = {
+            "chat_id": chat_id,
+            "text": chunk,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True
+        }
         try:
-            plain = messages[0].replace("*","").replace("_","").replace("\\","")
-            await bot.send_message(chat_id=chat_id, text=plain[:4000])
-            return True
-        except Exception as e2:
-            logger.error(f"Telegram fallback failed: {e2}")
-            return False
-
-
-def send_telegram(messages: list[str]) -> bool:
-    return asyncio.run(_send_telegram_async(messages))
+            res = requests.post(url, json=payload, timeout=10)
+            if res.status_code != 200:
+                logger.error(f"Telegram endpoint rejected broadcast message: {res.text}")
+        except Exception as e:
+            logger.error(f"Network transport error trying to hit Telegram gateway: {e}")
