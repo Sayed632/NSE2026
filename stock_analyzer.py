@@ -1,3 +1,6 @@
+import json
+import time
+
 def classify_and_score_news(raw_ingestion_payload: list[dict], weights: dict) -> list[dict]:
     """
     Sends consolidated unstructured text tables directly to Gemini
