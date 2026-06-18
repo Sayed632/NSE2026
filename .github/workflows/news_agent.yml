@@ -2,8 +2,8 @@ name: Stock News Intelligence Agent
 
 on:
   schedule:
-    - cron: "30 2 * * 1-5"
-    - cron: "30 7 * * 1-5"
+    - cron: "30 2 * * 1-5"  # 9:00 AM IST, Monday - Friday
+    - cron: "30 7 * * 1-5"  # 1:00 PM IST, Monday - Friday
   workflow_dispatch:
 
 jobs:
@@ -32,6 +32,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ─── SECURE DSJ CREDENTIAL INJECTION ──────────────────
+          DSJ_USER_ID: ${{ secrets.DSJ_USER_ID }}
+          DSJ_PASSWORD: ${{ secrets.DSJ_PASSWORD }}
+          # ───────────────────────────────────────────────────────
         run: python main.py
 
       - name: Commit reports
