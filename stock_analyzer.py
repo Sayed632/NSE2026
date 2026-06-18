@@ -1,3 +1,9 @@
+"""
+stock_analyzer.py
+Processes layout-agnostic raw streams through Gemini with dynamic rule injection,
+and applies secondary structural filters via yfinance.
+"""
+
 import os
 import json
 import time
@@ -7,35 +13,47 @@ import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
-# Initialize model components safely
 if "GEMINI_API_KEY" in os.environ:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 MODEL = genai.GenerativeModel("gemini-1.5-flash")
 
-# Default learning fallback configuration matrix
-SECTOR_SEED_STOCKS = {}
 
-def load_self_learning_weights():
-    return {}
-
-def classify_and_score_news(raw_ingestion_payload: list[dict], weights: dict) -> list[dict]:
+def classify_and_score_news(raw_ingestion_payload: list[dict], weights: dict = None) -> list[dict]:
     """
     Sends consolidated unstructured text tables directly to Gemini
     instructing it to run multi-horizon recommendation matrix mappings.
+    Injects self-evolved heuristic rules dynamically.
     """
     if not raw_ingestion_payload:
         return []
         
+    weights = weights or {}
     compiled_recommendations = []
     
+    # Extract prompt injection rules from the scoring_rules_override system if available
+    # This is where the self-learning evolution actually hooks into the live run
+    rules_override_prompt = ""
+    if os.path.exists("reports/scoring_rules_override.json"):
+        try:
+            with open("reports/scoring_rules_override.json", "r") as f:
+                rules_override_prompt = json.load(f).get("prompt_injection", "")
+        except Exception:
+            pass
+
     for stream in raw_ingestion_payload:
+        channel_weight = weights.get(stream['channel'], 1.0)
+        
         prompt = f"""You are a senior hedge fund systems analyst running deep telemetry checks on Indian stock updates.
-Analyze this raw data dump extracted from the DSIJ portal channel: [{stream['channel']}].
+Analyze this raw data dump extracted from the market intelligence feed channel: [{stream['channel']}].
+Current channel confidence weight adjustment: {channel_weight}
 
 Data Payload:
 \"\"\"
 {stream['raw_data_dump'][:6000]}
 \"\"\"
+
+CRITICAL EVOLUTIONARY SCORING RULES TO APPLY:
+{rules_override_prompt if rules_override_prompt else "No override constraints active for this cycle. Rely on standard baseline financial filters."}
 
 Task:
 Extract and output a raw JSON array of objects representing high-conviction insights.
@@ -80,6 +98,9 @@ Rules:
             parsed_insights = json.loads(clean_text)
             for insight in parsed_insights:
                 insight["channel"] = stream["channel"]
+                # Apply channel weight modifiers to the internal conviction matrix score
+                base_score = insight.get("score", 5)
+                insight["score"] = min(10, max(1, round(base_score * channel_weight)))
                 compiled_recommendations.append(insight)
         except Exception as e:
             logger.warning(f"Failed decoding stream payload tracking data for {stream['channel']}: {e}")
@@ -89,7 +110,7 @@ Rules:
     return compiled_recommendations
 
 
-def build_stock_lists(compiled_recommendations: list[dict], weights: dict) -> dict:
+def build_stock_lists(compiled_recommendations: list[dict], weights: dict = None) -> dict:
     """Processes asset selections across standard market cap and volatility filters."""
     list_a = []  # Short-Term / Swing / SME Momentum
     list_b = []  # Core Structural Compounders / Multibaggers
