@@ -1,101 +1,169 @@
 """
 news_fetcher.py
-Multi-source ingestion engine capable of standard HTML parsing,
-macro statistic scraping, and fallback generic structural text dumps.
+Multi-tier Ingestion Engine with Resilient Fallbacks.
+DSIJ Stealth -> Moneycontrol Public Feed -> Govt Policy Stream (PIB).
 """
 
 import os
 import logging
 import requests
+import feedparser
 from bs4 import BeautifulSoup
-import re
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Highly diversified asset endpoints provided by the user
-DSIJ_STREAM_CHANNELS = {
-    "Swing_Trading":       "https://insights.dsij.in/insight/trending-news/swing-trading",
-    "Penny_Stocks":        "https://insights.dsij.in/insight/trending-news/penny-stocks",
-    "Multibagger_News":    "https://insights.dsij.in/insight/trending-news/multibagger",
-    "SME_Emerging":        "https://insights.dsij.in/insight/trending-news/sme",
-    "Quarterly_Results":   "https://insights.dsij.in/insight/trending-news/quarterly-results",
-    "FII_DII_Flows":       "https://insights.dsij.in/markets/market-statistics/fii-dii",
-    "Broker_Research":     "https://insights.dsij.in/markets/reports/broker-reports",
-    "Guru_Investors":      "https://insights.dsij.in/markets/reports/guru-investors",
-    "Sprinting_Unicorns":  "https://insights.dsij.in/screener_details/operationtype/sprintingunicorns",
-    "Mindshare_Intel":     "https://insights.dsij.in/insight/trending-news/mindshare",
-    "Top_Gainers":         "https://insights.dsij.in/markets/market-statistics/top-gainers",
-    "Personal_Finance":    "https://insights.dsij.in/insight/trending-news/personal-finance",
-    "Experts_Speak":       "https://insights.dsij.in/insight/knowledge/experts-speak",
-    "Multibagger_Screen":  "https://insights.dsij.in/screener_details/operationtype/multibaggers",
-    "Corporate_Actions":   "https://insights.dsij.in/insight/trending-news/bonus-stock-split"
+# User-Agent Mimicry Matrix to bypass structural bot checks
+STEALTH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive"
 }
 
-def get_authenticated_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-    })
-    
-    username = os.environ.get("DSJ_USER_ID")
-    password = os.environ.get("DSJ_PASSWORD")
-    login_url = "https://www.dsij.in/LoginPage"
-    
-    payload = {"txtUser": username, "txtPassword": password, "btnLogin": "Login"}
-    try:
-        session.get("https://www.dsij.in/", timeout=10)
-        session.post(login_url, data=payload, timeout=12)
-        return session
-    except Exception as e:
-        logger.error(f"Authentication failure: {e}")
-    return session
+# 15 Hardcoded DSIJ Intelligence Feed Mappings
+CHANNELS = {
+    "SME_Emerging": "https://insights.dsij.in/products/sme-emerging",
+    "Flash_News": "https://insights.dsij.in/products/flash-news",
+    "Low_Priced_Scrips": "https://insights.dsij.in/products/low-priced-scrips",
+    "Value_Scrips": "https://insights.dsij.in/products/value-scrips",
+    "Growth_Scrips": "https://insights.dsij.in/products/growth-scrips",
+    "Stock_Kirana": "https://insights.dsij.in/products/stock-kirana",
+    "Technical_Traders": "https://insights.dsij.in/products/technical-traders",
+    "Derivatives_Whiz": "https://insights.dsij.in/products/derivatives-whiz",
+    "Options_Traders": "https://insights.dsij.in/products/options-traders",
+    "Trading_Call": "https://insights.dsij.in/products/trading-call",
+    "Delivery_Call": "https://insights.dsij.in/products/delivery-call",
+    "Intraday_Call": "https://insights.dsij.in/products/intraday-call",
+    "Micro_Cap_Gems": "https://insights.dsij.in/products/micro-cap-gems",
+    "Hidden_Gems": "https://insights.dsij.in/products/hidden-gems",
+    "Mid_Cap_Marvels": "https://insights.dsij.in/products/mid-cap-marvels"
+}
+
+PUBLIC_FEEDS = {
+    "Moneycontrol_Market": "https://www.moneycontrol.com/rss/marketnews.xml",
+    "Moneycontrol_Business": "https://www.moneycontrol.com/rss/business.xml",
+    "PIB_Govt_Policy": "https://pib.gov.in/RssMain.aspx?ModId=6&Lang=1&Regid=1"
+}
+
 
 def process_page_to_unified_text(html_content: str) -> str:
-    """
-    Layout-Agnostic text extractor. Removes script/style clutter, leaving
-    clean semantic text tables and paragraphs intact for Gemini context analysis.
-    """
-    soup = BeautifulSoup(html_content, "html.parser")
+    """Strips formatting structures to minimize API consumption footprints."""
+    if not html_content:
+        return ""
+    soup = BeautifulSoup(html_content, "lxml")
     
-    # Prune non-analytical components immediately
-    for element in soup(["script", "style", "nav", "footer", "header"]):
-        element.extract()
+    # Prune non-contextual artifacts
+    for script in soup(["script", "style", "header", "footer", "nav"]):
+        script.extract()
         
-    # Grab structural tables (e.g., FII/DII data rows or Guru tables)
-    table_strings = []
-    for table in soup.find_all("table"):
-        rows = []
-        for row in table.find_all("tr"):
-            cells = [cell.text.strip().replace("\n", " ") for cell in row.find_all(["td", "th"])]
-            rows.append(" | ".join(cells))
-        table_strings.append("\n".join(rows))
-        table.extract() # Remove to prevent duplicating text down below
-        
-    # Harvest remaining paragraph blocks and structural items
-    text_content = soup.get_text(separator="\n")
-    lines = [line.strip() for line in text_content.splitlines() if len(line.strip()) > 20]
-    
-    # Return structured consolidation
-    return "\n--- TABLE DATA ---\n".join(table_strings) + "\n--- BODY TEXT ---\n" + "\n".join(lines[:120])
+    lines = (line.strip() for line in soup.get_text().splitlines())
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    return "\n".join(chunk for chunk in chunks if chunk)
 
-def fetch_all_news() -> list[dict]:
-    """Loops through all structural web configurations and packs them as an raw data package."""
-    session = get_authenticated_session()
-    raw_ingestion_payload = []
+
+def fetch_dsij_stream() -> list[dict]:
+    """Authenticates and iterates through core DSIJ intelligence channels."""
+    payloads = []
+    username = os.environ.get("DSJ_USER_ID")
+    password = os.environ.get("DSJ_PASSWORD")
     
-    for channel, url in DSIJ_STREAM_CHANNELS.items():
-        logger.info(f"Ingesting channel data pipeline: [{channel}]")
-        try:
-            response = session.get(url, timeout=15)
-            if response.status_code == 200:
-                # Layout-agnostic consolidation
-                extracted_data = process_page_to_unified_text(response.text)
-                raw_ingestion_payload.append({
-                    "channel": channel,
-                    "url": url,
-                    "raw_data_dump": extracted_data
-                })
-        except Exception as e:
-            logger.error(f"Error harvesting data from stream {channel}: {e}")
+    if not username or not password:
+        logger.warning("DSIJ Credentials absent. Skipping primary tier.")
+        return []
+        
+    session = requests.Session()
+    login_url = "https://insights.dsij.in/login"
+    
+    try:
+        # Initial handshake to establish baseline cookies
+        get_res = session.get(login_url, headers=STEALTH_HEADERS, timeout=10)
+        soup = BeautifulSoup(get_res.text, "html.parser")
+        token_input = soup.find("input", {"name": "_token"})
+        token = token_input["value"] if token_input else ""
+        
+        login_data = {
+            "_token": token,
+            "email": username,
+            "password": password
+        }
+        
+        # Fire authentication challenge
+        post_res = session.post(login_url, data=login_data, headers=STEALTH_HEADERS, timeout=12)
+        if "login" in post_res.url.lower() and post_res.status_code == 200:
+            logger.error("DSIJ gateway rejected credentials or flagged session as bot.")
+            return []
             
-    return raw_ingestion_payload
+        # Ingest raw text data from the 15 targeted stream paths
+        for name, url in CHANNELS.items():
+            res = session.get(url, headers=STEALTH_HEADERS, timeout=8)
+            if res.status_code == 200:
+                clean_text = process_page_to_unified_text(res.text)
+                # Verify that we got content instead of paywall blockades
+                if "upgrade your plan" not in clean_text.lower() and len(clean_text) > 200:
+                    payloads.append({
+                        "channel": name,
+                        "raw_data_dump": clean_text
+                    })
+            logger.info(f"DSIJ stream extraction step evaluated for channel: {name}")
+            
+    except Exception as e:
+        logger.warning(f"Primary DSIJ data connection pipeline dropped: {e}")
+        
+    return payloads
+
+
+def fetch_public_fallbacks() -> list[dict]:
+    """Extracts unstructured text telemetry out of institutional RSS feeds."""
+    payloads = []
+    logger.info("Initializing public-facing institutional fallback tracks...")
+    
+    for name, url in PUBLIC_FEEDS.items():
+        try:
+            feed = feedparser.parse(url)
+            compiled_items = []
+            
+            for entry in feed.entries[:20]:  # Capture the latest 20 breaking updates
+                title = entry.get("title", "")
+                summary = entry.get("summary", "")
+                description = entry.get("description", "")
+                compiled_items.append(f"Heading: {title}\nSummary: {summary}\nContext: {description}\n---")
+                
+            if compiled_items:
+                payloads.append({
+                    "channel": name,
+                    "raw_data_dump": "\n".join(compiled_items)
+                })
+                logger.info(f"Successfully processed public fallback track: {name}")
+        except Exception as e:
+            logger.error(f"Failed pulling public RSS feed payload for {name}: {e}")
+            
+    return payloads
+
+
+def ingest_market_intelligence() -> list[dict]:
+    """Main execution engine balancing active streams with standard fallbacks."""
+    # Step 1: Execute primary DSIJ capture matrix
+    data_matrix = fetch_dsij_stream()
+    
+    # Step 2: If DSIJ is empty, blocked, or paywalled, activate Tier-2 Public Networks
+    if not data_matrix:
+        logger.warning("Primary stream dataset empty. Activating public networks.")
+        data_matrix = fetch_public_fallbacks()
+    else:
+        # Step 3: Always append Government PIB policy signals alongside DSIJ data
+        try:
+            pib_feed = feedparser.parse(PUBLIC_FEEDS["PIB_Govt_Policy"])
+            pib_items = []
+            for entry in pib_feed.entries[:15]:
+                pib_items.append(f"Govt Notification: {entry.get('title','')}\n{entry.get('summary','')}\n---")
+            if pib_items:
+                data_matrix.append({
+                    "channel": "PIB_Govt_Policy",
+                    "raw_data_dump": "\n".join(pib_items)
+                })
+                logger.info("Government Policy Stream appended to active data payload matrix.")
+        except Exception as e:
+            logger.error(f"Isolated policy stream attachment skipped: {e}")
+            
+    return data_matrix
