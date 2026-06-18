@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 if "GEMINI_API_KEY" in os.environ:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 
-MODEL = genai.[span_2](start_span)GenerativeModel("gemini-2.5-flash")
+# Configured to use the updated, highly stable model version
+MODEL = genai.GenerativeModel("gemini-2.5-flash")
 
 
 def classify_and_score_news(raw_ingestion_payload: list[dict], weights: dict = None) -> list[dict]:
@@ -32,7 +33,6 @@ def classify_and_score_news(raw_ingestion_payload: list[dict], weights: dict = N
     compiled_recommendations = []
     
     # Extract prompt injection rules from the scoring_rules_override system if available
-    # This is where the self-learning evolution actually hooks into the live run
     rules_override_prompt = ""
     if os.path.exists("reports/scoring_rules_override.json"):
         try:
