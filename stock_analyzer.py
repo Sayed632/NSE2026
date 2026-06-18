@@ -15,7 +15,8 @@ logger = logging.getLogger(__name__)
 
 if "GEMINI_API_KEY" in os.environ:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = genai.GenerativeModel("gemini-1.5-flash")
+
+MODEL = genai.[span_2](start_span)GenerativeModel("gemini-2.5-flash")
 
 
 def classify_and_score_news(raw_ingestion_payload: list[dict], weights: dict = None) -> list[dict]:
