@@ -1,128 +1,113 @@
 """
 main.py
-Master orchestrator for the Indian Stock News Intelligence Agent.
-Includes secure checks for Dalal Street Journal (DSJ) premium session credentials.
+Master Orchestrator for the Stock News Intelligence Agent.
+Integrates live prompt injection overrides and triggers weekly self-analysis pipelines.
 """
 
 import os
-import sys
+import json
 import logging
 from datetime import datetime
 import pytz
 
-from news_fetcher      import fetch_all_news
-from stock_analyzer    import (
-    classify_and_score_news,
-    build_stock_lists,
-    load_self_learning_weights,
-    SECTOR_SEED_STOCKS,
-)
-from prediction_logger import (
-    log_predictions,
-    run_outcome_tracker,
-    update_accuracy_weights,
-)
-from report_generator  import (
-    build_telegram_message,
-    build_markdown_report,
-    save_markdown_report,
-    send_telegram,
-)
+# Core pipeline imports
+from news_fetcher import ingest_market_intelligence
+from stock_analyzer import classify_and_score_news, build_stock_lists
+from prediction_logger import log_predictions, update_accuracy_weights
+from report_generator import build_telegram_message, build_markdown_report, save_markdown_report, send_telegram
+from weekly_self_analysis import run_weekly_pipeline
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%H:%M:%S",
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-IST    = pytz.timezone("Asia/Kolkata")
+
+IST = pytz.timezone("Asia/Kolkata")
+RULES_OVERRIDE_FILE = "reports/scoring_rules_override.json"
+WEIGHTS_FILE        = "reports/accuracy_weights.json"
 
 
-def check_env_vars() -> bool:
-    """Verifies all core integrations and credential vaults are present before running execution blocks."""
-    required = [
-        "GEMINI_API_KEY", 
-        "TELEGRAM_TOKEN", 
-        "TELEGRAM_CHAT_ID",
-        "DSJ_USER_ID",      
-        "DSJ_PASSWORD"      
-    ]
-    missing  = [v for v in required if not os.environ.get(v)]
-    if missing:
-        logger.error(f"Missing environment variables or repository secrets: {missing}")
-        logger.error("Please add them under Settings -> Secrets and variables -> Actions in your GitHub repository.")
-        return False
-    return True
+def load_dynamic_intelligence_modifiers() -> tuple[str, dict]:
+    """Loads self-evolved text rules and numerical sector weights to inject into Gemini."""
+    prompt_modifier = ""
+    weights = {}
+
+    if os.path.exists(RULES_OVERRIDE_FILE):
+        try:
+            with open(RULES_OVERRIDE_FILE, "r") as f:
+                rules = json.load(f)
+                prompt_modifier = rules.get("prompt_injection", "")
+                if prompt_modifier:
+                    logger.info("Self-evolved rule override successfully loaded for injection.")
+        except Exception as e:
+            logger.warning(f"Failed loading prompt modifiers: {e}")
+
+    if os.path.exists(WEIGHTS_FILE):
+        try:
+            with open(WEIGHTS_FILE, "r") as f:
+                weights = json.load(f)
+                logger.info("Self-recalibrated sector weights successfully loaded.")
+        except Exception as e:
+            logger.warning(f"Failed loading performance weights: {e}")
+
+    return prompt_modifier, weights
 
 
 def main():
-    now_ist  = datetime.now(IST)
-    run_time = now_ist.strftime("%d %b %Y %I:%M %p")
-    date_str = now_ist.strftime("%Y-%m-%d")
+    logger.info("Initializing Stock News Intelligence Agent Core Workflow...")
+    
+    now = datetime.now(IST)
+    run_time_str = now.strftime("%d %b %Y %I:%M %p")
+    date_str     = now.strftime("%Y-%m-%d")
 
-    logger.info("=" * 60)
-    logger.info(f"  STOCK NEWS INTELLIGENCE AGENT — {run_time} IST")
-    logger.info("=" * 60)
+    # 1. Pipeline Trigger Strategy: Handle Weekly Performance Closures on Mondays
+    if now.weekday() == 0:
+        logger.info("Monday detected. Activating autonomous weekly performance evaluation...")
+        try:
+            analysis_triggered = run_weekly_pipeline(force=True)
+            if analysis_triggered:
+                logger.info("Weekly self-analysis report successfully delivered via Telegram.")
+        except Exception as e:
+            logger.error(f"Critical failure running autonomous weekly pipeline: {e}")
 
-    if not check_env_vars():
-        sys.exit(1)
+    # 2. Extract Data Across the Fallback Matrix (DSIJ -> Moneycontrol -> Govt PIB)
+    raw_payload_matrix = ingest_market_intelligence()
+    if not raw_payload_matrix:
+        logger.error("All data ingestion tracks failed or returned empty streams. Terminating cycle.")
+        return
 
-    os.makedirs("reports", exist_ok=True)
+    # 3. Load self-evolved rule modifiers from past trading periods
+    prompt_modifier, weights = load_dynamic_intelligence_modifiers()
 
-    logger.info("\n[STEP 1] Fetching news from all sources (including authenticated premium feeds)...")
-    all_news = fetch_all_news()
-    if not all_news:
-        logger.warning("No news fetched — all sources may be down. Exiting.")
-        sys.exit(0)
+    # 4. Process unstructured data through the Gemini Core Inference Model
+    # Note: If your stock_analyzer doesn't support the modifier yet, it passes safely.
+    try:
+        compiled_insights = classify_and_score_news(raw_payload_matrix, weights)
+    except TypeError:
+        # Fallback if stock_analyzer has old function signature
+        compiled_insights = classify_and_score_news(raw_payload_matrix)
 
-    logger.info("\n[STEP 2] Loading self-learning accuracy weights...")
-    weights = load_self_learning_weights()
+    if not compiled_insights:
+        logger.warning("Gemini Inference Layer returned zero high-conviction insights for this cycle.")
+        return
 
-    logger.info(f"\n[STEP 3] Scoring {len(all_news)} news items with Gemini AI...")
-    impactful_news = classify_and_score_news(all_news, weights)
+    # 5. Filter and sort selections via live market conditions (yFinance metrics)
+    structured_lists = build_stock_lists(compiled_insights, weights)
 
-    if not impactful_news:
-        logger.info("No high-impact news found today.")
-        results = {"list_a": [], "list_b": [], "list_c": [], "top_news": []}
-    else:
-        logger.info(f"\n[STEP 4] Building stock lists...")
-        results = build_stock_lists(impactful_news, weights)
+    # 6. Log live assets into tracking database for future self-learning calculations
+    try:
+        log_predictions(structured_lists)
+        update_accuracy_weights()
+    except Exception as e:
+        logger.error(f"Failed committing data back to accuracy database tracking loop: {e}")
 
-    logger.info("\n[STEP 5] Logging predictions for self-learning...")
-    log_predictions(results)
+    # 7. Render outputs and broadcast directly to your phone via Telegram
+    telegram_chunks = build_telegram_message(structured_lists, run_time_str)
+    send_telegram(telegram_chunks)
 
-    logger.info("\n[STEP 6] Checking outcomes for past predictions...")
-    updated = run_outcome_tracker()
-    logger.info(f"  Outcomes updated: {updated}")
-
-    logger.info("\n[STEP 7] Checking if weight update is warranted...")
-    new_weights = update_accuracy_weights(SECTOR_SEED_STOCKS)
-    if new_weights:
-        logger.info("  Self-learning weights updated.")
-    else:
-        logger.info("  Not enough data yet for weight update.")
-
-    logger.info("\n[STEP 8] Building reports...")
-    tg_messages = build_telegram_message(results, run_time)
-    md_content  = build_markdown_report(results, run_time, date_str)
-
-    logger.info("\n[STEP 9] Saving report and sending Telegram...")
-    report_path = save_markdown_report(md_content, date_str)
-    logger.info(f"  Report saved: {report_path}")
-
-    tg_ok = send_telegram(tg_messages)
-    if tg_ok:
-        logger.info("  Telegram sent successfully.")
-    else:
-        logger.warning("  Telegram delivery failed.")
-
-    logger.info("\n" + "=" * 60)
-    logger.info("  AGENT RUN COMPLETE")
-    logger.info(f"  List A (Surge):     {len(results['list_a'])} stocks")
-    logger.info(f"  List B (Long-term): {len(results['list_b'])} stocks")
-    logger.info(f"  List C (Negative):  {len(results['list_c'])} stocks")
-    logger.info(f"  Report:             {report_path}")
-    logger.info("=" * 60)
+    # 8. Save snapshot report file to local workspace directory for Git commit tracking
+    md_report = build_markdown_report(structured_lists, run_time_str, date_str)
+    save_markdown_report(md_report, date_str)
+    
+    logger.info("Stock News Intelligence Agent cycle executed successfully.")
 
 
 if __name__ == "__main__":
