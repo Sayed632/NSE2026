@@ -1,14 +1,7 @@
 """
 prediction_logger.py
-Phase 2 Self-Learning Foundation.
-
-Every run logs predictions to reports/predictions.csv.
-After 7 days, the outcome_tracker checks actual price movements.
-After 20+ data points, accuracy_weights.json is updated so the
-agent scores future news with calibrated sector confidence.
-
-Phase 1: Logs predictions only.
-Phase 2: Full feedback loop (auto-activated once 20 rows exist).
+Stores open positions and calculates mathematical sector track weights
+based on historical performance realizations.
 """
 
 import os
@@ -19,181 +12,160 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import pytz
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+IST = pytz.timezone("Asia/Kolkata")
 
-IST          = pytz.timezone("Asia/Kolkata")
 PREDICTIONS_FILE = "reports/predictions.csv"
 WEIGHTS_FILE     = "reports/accuracy_weights.json"
-MIN_ROWS_FOR_LEARNING = 20
 
 
-def log_predictions(results: dict) -> None:
-    """
-    Append today's List A and List B picks to predictions.csv
-    so outcomes can be tracked 7 days later.
-    """
+def log_predictions(structured_lists: dict):
+    """Logs newly identified assets with prospective forward verification timestamps."""
     os.makedirs("reports", exist_ok=True)
-    today    = datetime.now(IST).strftime("%Y-%m-%d")
-    rows     = []
-
-    for stock in results.get("list_a", []):
-        rows.append({
+    
+    new_records = []
+    today = datetime.now(IST).date()
+    
+    # Process Short-Term assets (List A) -> 7-Day Verification Target
+    for stock in structured_lists.get("list_a", []):
+        new_records.append({
             "date_predicted": today,
-            "symbol":         stock["symbol"],
-            "list_type":      "A_SURGE",
-            "price_at_pred":  stock["price"],
-            "target":         stock.get("target_zone", ""),
-            "trigger_news":   stock.get("trigger_news", "")[:100],
-            "outcome_date":   (datetime.now(IST) + timedelta(days=7)).strftime("%Y-%m-%d"),
-            "price_at_outcome": None,
-            "pct_change":       None,
-            "correct":          None,
+            "symbol": stock["symbol"],
+            "entry_price": stock["price"],
+            "list_type": "LIST_A",
+            "trigger_news": stock.get("reason", "No reason mapped"),
+            "channel": stock.get("origin_channel", "Unknown"),
+            "eval_date": today + timedelta(days=7),
+            "correct": None,
+            "pct_change": None
         })
 
-    for stock in results.get("list_b", []):
-        rows.append({
+    # Process Long-Term assets (List B) -> 30-Day Verification Target
+    for stock in structured_lists.get("list_b", []):
+        new_records.append({
             "date_predicted": today,
-            "symbol":         stock["symbol"],
-            "list_type":      "B_LONGTERM",
-            "price_at_pred":  stock["price"],
-            "target":         "",
-            "trigger_news":   stock.get("catalysts", "")[:100],
-            "outcome_date":   (datetime.now(IST) + timedelta(days=30)).strftime("%Y-%m-%d"),
-            "price_at_outcome": None,
-            "pct_change":       None,
-            "correct":          None,
+            "symbol": stock["symbol"],
+            "entry_price": stock["price"],
+            "list_type": "LIST_B",
+            "trigger_news": stock.get("reason", "No reason mapped"),
+            "channel": stock.get("origin_channel", "Unknown"),
+            "eval_date": today + timedelta(days=30),
+            "correct": None,
+            "pct_change": None
         })
 
-    if not rows:
-        logger.info("No predictions to log today.")
+    if not new_records:
+        logger.info("No active selections present to append to tracking files.")
         return
 
-    new_df = pd.DataFrame(rows)
+    new_df = pd.DataFrame(new_records)
 
     if os.path.exists(PREDICTIONS_FILE):
-        existing = pd.read_csv(PREDICTIONS_FILE)
-        combined = pd.concat([existing, new_df], ignore_index=True)
+        try:
+            old_df = pd.read_csv(PREDICTIONS_FILE)
+            # Prevent duplicate logging for identical tickers flagged on the same date
+            combined_df = pd.concat([old_df, new_df]).drop_duplicates(
+                subset=["date_predicted", "symbol", "list_type"], keep="first"
+            )
+            combined_df.to_csv(PREDICTIONS_FILE, index=False)
+        except Exception as e:
+            logger.error(f"Error appending back into prediction matrix storage node: {e}")
     else:
-        combined = new_df
-
-    combined.to_csv(PREDICTIONS_FILE, index=False)
-    logger.info(f"Logged {len(rows)} predictions to {PREDICTIONS_FILE}")
+        new_df.to_csv(PREDICTIONS_FILE, index=False)
+    logger.info(f"Successfully tracked {len(new_df)} prospective allocations in master logs.")
 
 
-def run_outcome_tracker() -> int:
+def update_accuracy_weights():
     """
-    Check predictions whose outcome_date has passed.
-    Fetch actual prices, compute % change, mark correct/incorrect.
-    Returns number of rows updated.
+    Evaluates matured targets via historical market quotes (yfinance)
+    and adjusts baseline tracking modifiers proportionally.
     """
     if not os.path.exists(PREDICTIONS_FILE):
-        return 0
+        return
 
-    df      = pd.read_csv(PREDICTIONS_FILE)
-    today   = datetime.now(IST).strftime("%Y-%m-%d")
-    updated = 0
+    try:
+        df = pd.read_csv(PREDICTIONS_FILE)
+    except Exception as e:
+        logger.error(f"Failed loading metrics registry matrix: {e}")
+        return
 
-    for idx, row in df.iterrows():
-        if pd.notna(row.get("correct")):
-            continue  # Already evaluated
-        if str(row.get("outcome_date", "")) > today:
-            continue  # Not due yet
+    today = datetime.now(IST).date()
+    df["eval_date"] = pd.to_datetime(df["eval_date"]).dt.date
+    df["date_predicted"] = pd.to_datetime(df["date_predicted"]).dt.date
 
-        symbol = row["symbol"]
+    has_updates = False
+
+    # Pull un-evaluated rows whose milestone date has come due
+    matured_mask = (df["correct"].isna()) & (df["eval_date"] <= today)
+    matured_indices = df[matured_mask].index
+
+    for idx in matured_indices:
+        ticker = df.at[idx, "symbol"]
+        entry = float(df.at[idx, "entry_price"])
+        list_type = df.at[idx, "list_type"]
+        pred_date = df.at[idx, "date_predicted"]
+        ev_date = df.at[idx, "eval_date"]
+
         try:
-            ticker  = yf.Ticker(symbol)
-            hist    = ticker.history(period="5d")
+            tk = yf.Ticker(ticker)
+            # Request historical boundaries surrounding target execution date window
+            hist = tk.history(start=pred_date, end=ev_date + timedelta(days=4))
             if hist.empty:
                 continue
-            current_price = round(hist["Close"].iloc[-1], 2)
-            pred_price    = float(row["price_at_pred"])
-            pct_change    = round((current_price - pred_price) / pred_price * 100, 2)
 
-            # Correct = surged > 3% for List A, > 5% for List B within timeframe
-            threshold = 3.0 if row["list_type"] == "A_SURGE" else 5.0
-            correct   = pct_change >= threshold
+            # Identify maximum achieved boundary close to track peak performance
+            highest_close = float(hist["Close"].max())
+            pct_gain = ((highest_close - entry) / entry) * 100
+            df.at[idx, "pct_change"] = round(pct_gain, 2)
 
-            df.at[idx, "price_at_outcome"] = current_price
-            df.at[idx, "pct_change"]       = pct_change
-            df.at[idx, "correct"]          = correct
-            updated += 1
-            logger.info(f"Outcome: {symbol} {pct_change:+.1f}% → {'✓' if correct else '✗'}")
+            # Benchmark performance expectations depending on system setup type
+            if list_type == "LIST_A":
+                df.at[idx, "correct"] = bool(pct_gain >= 6.0)  # Short-term target
+            else:
+                df.at[idx, "correct"] = bool(pct_gain >= 15.0) # Long-term multiplier
+
+            has_updates = True
+            logger.info(f"Evaluated performance milestone for {ticker}: Gain = {pct_gain:.1f}%")
         except Exception as e:
-            logger.debug(f"Outcome fetch failed for {symbol}: {e}")
+            logger.warning(f"Failed processing market evaluation for asset {ticker}: {e}")
 
-    if updated > 0:
-        df.to_csv(PREDICTIONS_FILE, index=False)
-        logger.info(f"Updated {updated} prediction outcomes.")
+    if has_updates:
+        try:
+            df.to_csv(PREDICTIONS_FILE, index=False)
+        except Exception as e:
+            logger.error(f"Failed flashing metrics changes to disk: {e}")
 
-    return updated
-
-
-def update_accuracy_weights(sector_seed_stocks: dict) -> dict:
-    """
-    Phase 2 core: rebuild accuracy_weights.json from prediction outcomes.
-    Only runs once MIN_ROWS_FOR_LEARNING evaluated rows exist.
-    Returns updated weights dict.
-    """
-    if not os.path.exists(PREDICTIONS_FILE):
-        return {}
-
-    df = pd.read_csv(PREDICTIONS_FILE)
+    # --- RECALCULATE DYNAMIC CHANNEL / SECTOR WEIGHTS ---
     evaluated = df[df["correct"].notna()]
+    if len(evaluated) < 5:
+        return  # Require stable data foundations before adapting model heuristics
 
-    if len(evaluated) < MIN_ROWS_FOR_LEARNING:
-        logger.info(
-            f"Only {len(evaluated)} evaluated predictions — need {MIN_ROWS_FOR_LEARNING} for weight update."
-        )
-        return {}
-
-    # Build reverse map: symbol → sectors
-    symbol_to_sectors = {}
-    for sector, symbols in sector_seed_stocks.items():
-        for sym in symbols:
-            symbol_to_sectors.setdefault(sym, []).append(sector)
-
-    # Compute per-sector accuracy
-    sector_stats = {}
-    for _, row in evaluated.iterrows():
-        sectors = symbol_to_sectors.get(row["symbol"], ["Other"])
-        for sector in sectors:
-            if sector not in sector_stats:
-                sector_stats[sector] = {"correct": 0, "total": 0}
-            sector_stats[sector]["total"] += 1
-            if row["correct"]:
-                sector_stats[sector]["correct"] += 1
-
+    # Establish baseline index weight mapping matrix
     weights = {}
-    for sector, stats in sector_stats.items():
-        accuracy = stats["correct"] / stats["total"] if stats["total"] > 0 else 0.5
-        # Weight scale: 0.5 (poor) to 1.5 (excellent)
-        weights[sector] = round(0.5 + accuracy, 2)
+    all_channels = df["channel"].dropna().unique()
+    for ch in all_channels:
+        weights[ch] = 1.0
 
-    # Fill missing sectors with 1.0
-    for sector in sector_seed_stocks:
-        weights.setdefault(sector, 1.0)
+    for ch in all_channels:
+        ch_history = evaluated[evaluated["channel"] == ch]
+        if ch_history.empty:
+            continue
 
-    os.makedirs("reports", exist_ok=True)
-    with open(WEIGHTS_FILE, "w") as f:
-        json.dump(weights, f, indent=2)
+        total = len(ch_history)
+        correct_runs = int(ch_history["correct"].sum())
+        success_ratio = correct_runs / total
 
-    logger.info(f"✅ Accuracy weights updated: {weights}")
+        # Shift weights dynamically based on historical performance ratios
+        if success_ratio >= 0.70:
+            weights[ch] = 1.35  # High-conviction bump
+        elif success_ratio >= 0.50:
+            weights[ch] = 1.10  # Moderate confidence bump
+        elif success_ratio <= 0.30:
+            weights[ch] = 0.65  # Penalize high-risk/underperforming channels
 
-    # Print learning summary
-    summary_lines = ["## Self-Learning Summary\n"]
-    summary_lines.append(f"Total evaluated predictions: {len(evaluated)}\n")
-    summary_lines.append("| Sector | Correct | Total | Accuracy | Weight |\n")
-    summary_lines.append("|--------|---------|-------|----------|--------|\n")
-    for sector, stats in sorted(sector_stats.items(), key=lambda x: -x[1].get("correct",0)/max(x[1].get("total",1),1)):
-        acc = stats["correct"] / stats["total"] * 100 if stats["total"] > 0 else 0
-        w   = weights.get(sector, 1.0)
-        summary_lines.append(
-            f"| {sector} | {stats['correct']} | {stats['total']} | {acc:.0f}% | {w} |\n"
-        )
-
-    with open("reports/learning_summary.md", "w") as f:
-        f.writelines(summary_lines)
-
-    return weights
-          
+    try:
+        with open(WEIGHTS_FILE, "w") as f:
+            json.dump(weights, f, indent=2)
+        logger.info("Dynamic tracking confidence index successfully flushed to operational matrix.")
+    except Exception as e:
+        logger.error(f"Failed writing dynamic weight matrices back to filesystem: {e}")
