@@ -1,4 +1,18 @@
 """
+
+# Add this import at the top of main.py
+from backtester import run_historical_event_backtest
+
+# Inside your def main(): function, run it right at the beginning
+def main():
+    logger.info("Initializing Stock News Intelligence Agent Core Workflow...")
+    
+    # Run the backtest first so the agent can learn and update its rules before scanning today's news
+    try:
+        run_historical_event_backtest()
+    except Exception as e:
+        logger.warning(f"Backtester cycle skipped: {e}")
+
 main.py
 Master Orchestrator for the Stock News Intelligence Agent.
 Integrates live prompt injection overrides and triggers weekly self-analysis pipelines.
