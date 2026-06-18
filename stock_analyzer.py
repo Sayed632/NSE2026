@@ -46,16 +46,23 @@ Rules:
 - Do not output any markdown code blocks, backticks (```), or conversational preambles.
 """
         try:
-            # Call your configured Gemini Model instance (Ensure MODEL is defined globally in stock_analyzer.py)
+            # Call your configured Gemini Model instance
             response = MODEL.generate_content(prompt)
             
-            # Clean up markdown tags on safe, independent lines
-            clean_text = response.text.strip()
-            clean_text = clean_text.replace("```json", "")
-            clean_text = clean_text.replace("```JSON", "")
-            clean_text = clean_text.replace("
-```", "")
-            clean_text = clean_text.strip()
+            # --- SMARTPHONE SAFE CLEANUP DESERIALIZER ---
+            # Splits text by line and filters out any lines containing backticks or language markers
+            raw_lines = response.text.splitlines()
+            clean_lines = []
+            for line in raw_lines:
+                strip_line = line.strip()
+                if "`" in strip_line:
+                    continue
+                if strip_line.lower() == "json":
+                    continue
+                clean_lines.append(strip_line)
+                
+            clean_text = "".join(clean_lines).strip()
+            # ─────────────────────────────────────────────
             
             if not clean_text or clean_text == "[]":
                 continue
