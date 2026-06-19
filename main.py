@@ -15,8 +15,7 @@ import pytz
 from backtester import run_historical_event_backtest
 from news_fetcher import ingest_market_intelligence
 from stock_analyzer import classify_and_score_news, build_stock_lists
-from prediction_logger import log_predictions, update_accuracy_weights
-from report_generator import build_telegram_message, send_telegram
+from report_generator import build_telegram_message, send_telegram, log_predictions, build_markdown_report, save_markdown_report
 from weekly_self_analysis import run_weekly_pipeline
 
 logging.basicConfig(level=logging.INFO)
@@ -58,6 +57,7 @@ def main():
     
     now = datetime.now(IST)
     run_time_str = now.strftime("%d %b %Y %I:%M %p")
+    date_str = now.strftime("%Y-%m-%d")
 
     # 1. Pipeline Trigger Strategy: Handle Weekly Performance Closures on Mondays
     if now.weekday() == 0:
@@ -70,7 +70,6 @@ def main():
             logger.error(f"Critical failure running autonomous weekly pipeline: {e}")
 
     # 2. RUN HISTORICAL BACKTEST LEARNING LOOP
-    # The agent reviews past asset results and writes programmatic rules *before* parsing new data
     logger.info("Executing event-driven historical backtest learning loop...")
     try:
         run_historical_event_backtest()
@@ -94,15 +93,17 @@ def main():
 
     if not compiled_insights:
         logger.warning("Gemini Inference Layer returned zero high-conviction insights for this cycle.")
-        return
-
-    # 6. Filter and sort selections via live market conditions & Technical Safeguards (yFinance)
-    structured_lists = build_stock_lists(compiled_insights, weights)
+        # Create an empty dictionary structure so the report can print cleanly instead of exiting
+        structured_lists = {"list_a": [], "list_b": [], "top_news": []}
+    else:
+        # 6. Filter and sort selections via live market conditions & Technical Safeguards (yFinance)
+        structured_lists = build_stock_lists(compiled_insights, weights)
 
     # 7. Log live assets into tracking database for future self-learning calculations
     try:
         log_predictions(structured_lists)
-        update_accuracy_weights()
+        md_content = build_markdown_report(structured_lists, run_time_str, date_str)
+        save_markdown_report(md_content, date_str)
     except Exception as e:
         logger.error(f"Failed committing data back to accuracy database tracking loop: {e}")
 
