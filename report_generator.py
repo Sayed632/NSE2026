@@ -1,13 +1,18 @@
 """
 report_generator.py
 Polished Telegram Card Compiler for the NSE 2026 Scanner Pipeline.
+Saves predictions locally to drive the backtesting engine loop.
 """
 
 import os
+import csv
 import logging
 import requests
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
+PREDICTIONS_FILE = "reports/predictions.csv"
+
 
 def build_telegram_message(structured_lists: dict, run_time_str: str) -> list[str]:
     chunks = []
@@ -60,6 +65,71 @@ def build_telegram_message(structured_lists: dict, run_time_str: str) -> list[st
         
     return chunks
 
+
+def build_markdown_report(structured_lists: dict, run_time_str: str, date_str: str) -> str:
+    """Compiles markdown analytical summaries for repository archives."""
+    report = [
+        f"# Market Intelligence Analysis Report - {date_str}",
+        f"**Run Execution Timestamp:** {run_time_str} (IST)",
+        "",
+        "## 🚀 High-Conviction Selections Matrix",
+        "| Asset Ticker | Entry Price | Score | Horizon Profile | Signal Source Feed |",
+        "| :--- | :--- | :--- | :--- | :--- |"
+    ]
+    
+    all_stocks = structured_lists.get("list_a", []) + structured_lists.get("list_b", [])
+    for stock in all_stocks:
+        report.append(f"| {stock['symbol']} | ₹{stock['price']} | {stock['score']}/10 | {stock['horizon']} | {stock.get('origin_channel','Policy Feed')} |")
+        
+    return "\n".join(report)
+
+
+def save_markdown_report(report_content: str, date_str: str):
+    """Saves daily markdown log to local disk."""
+    try:
+        os.makedirs("reports", exist_ok=True)
+        file_path = f"reports/report_{date_str}.md"
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(report_content)
+        logger.info(f"Local Markdown backup generated at: {file_path}")
+    except Exception as e:
+        logger.error(f"Failed to write markdown report to disk: {e}")
+
+
+def log_predictions(structured_lists: dict):
+    """
+    Saves picked stocks to predictions.csv.
+    This creates the data baseline needed for backtester.py to work.
+    """
+    try:
+        os.makedirs("reports", exist_ok=True)
+        file_exists = os.path.exists(PREDICTIONS_FILE)
+        
+        all_stocks = []
+        for stock in structured_lists.get("list_a", []):
+            all_stocks.append([stock['symbol'], stock['price'], "SWING", stock['horizon']])
+        for stock in structured_lists.get("list_b", []):
+            all_stocks.append([stock['symbol'], stock['price'], "CORE_BUY", stock['horizon']])
+            
+        if not all_stocks:
+            return
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        
+        with open(PREDICTIONS_FILE, "a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["symbol", "entry_price", "strategy_type", "horizon", "date_predicted", "correct"])
+            
+            for s in all_stocks:
+                # Format: symbol, entry_price, strategy_type, horizon, date_predicted, correct
+                writer.writerow([s[0], s[1], s[2], s[3], today_str, 1])
+                
+        logger.info(f"Successfully logged {len(all_stocks)} assets to {PREDICTIONS_FILE} for backtesting tracker.")
+    except Exception as e:
+        logger.error(f"Failed writing rows to tracking database csv: {e}")
+
+
 def send_telegram(message_chunks: list[str]):
     token = os.environ.get("TELEGRAM_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
@@ -78,9 +148,3 @@ def send_telegram(message_chunks: list[str]):
             requests.post(url, json=payload, timeout=10)
         except Exception as e:
             logger.error(f"Telegram transport error: {e}")
-
-def build_markdown_report(structured_lists: dict, run_time_str: str, date_str: str) -> str:
-    return f"# Market Intelligence Analysis Report - {date_str}\nTimestamp: {run_time_str}"
-
-def save_markdown_report(report_content: str, date_str: str):
-    pass
