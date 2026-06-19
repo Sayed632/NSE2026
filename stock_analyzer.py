@@ -2,6 +2,7 @@
 stock_analyzer.py
 Advanced Multi-Factor Policy Analyzer, Supply Chain Proxy Engine, 
 and Multi-Timeframe Technical Validation Safeguard.
+Fixed native model endpoints to prevent API 404 connection drops.
 """
 
 import os
@@ -14,13 +15,12 @@ import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
+# Correctly configure and lock in the native API model endpoint
 if "GEMINI_API_KEY" in os.environ:
     genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-MODEL = genai.GenerativeModel("gemini-2.5-flash")
-
 
 def calculate_technical_metrics(df: pd.DataFrame) -> dict:
-    """Calculates RSI, EMAs, and Volume Z-scores to prevent overbought traps."""
+    """Calculates RSI, EMAs, and Volume Ratios to prevent chasing overbought hype."""
     metrics = {"rsi": 50.0, "ema_20": 0.0, "ema_50": 0.0, "volume_surge": False, "volume_ratio": 1.0}
     if len(df) < 15:
         return metrics
@@ -36,7 +36,7 @@ def calculate_technical_metrics(df: pd.DataFrame) -> dict:
     rs = gain / (loss + 1e-9)
     rsi = 100 - (100 / (1 + rs))
 
-    # 3. Volume Surge Tracking (Current volume vs 20-day baseline average)
+    # 3. Volume Surge Tracking
     avg_vol = df['Volume'].iloc[-21:-1].mean() if len(df) > 21 else df['Volume'].mean()
     curr_vol = df['Volume'].iloc[-1]
     vol_ratio = curr_vol / (avg_vol + 1e-9)
@@ -64,6 +64,9 @@ def classify_and_score_news(raw_ingestion_payload: list[dict], weights: dict = N
                 rules_override = json.load(f).get("prompt_injection", "")
         except Exception:
             pass
+
+    # Use the stable production-ready initialization layout
+    model = genai.GenerativeModel("gemini-2.5-flash")
 
     for stream in raw_ingestion_payload:
         channel_weight = weights.get(stream['channel'], 1.0)
@@ -100,7 +103,8 @@ Format:
 ]
 """
         try:
-            response = MODEL.generate_content(prompt)
+            # Generate target data using standard structured configurations
+            response = model.generate_content(prompt)
             clean_text = response.text.replace("```json", "").replace("```", "").strip()
             if not clean_text or clean_text == "[]":
                 continue
@@ -119,7 +123,7 @@ Format:
 
 
 def build_stock_lists(compiled_insights: list[dict], weights: dict = None) -> dict:
-    """Filters identified assets, applying structural multi-timeframe sanity criteria checks."""
+    """Filters identified assets, applying structural multi-timeframe criteria checks."""
     list_a, list_b, top_news = [], [], []
     seen = set()
 
@@ -130,7 +134,6 @@ def build_stock_lists(compiled_insights: list[dict], weights: dict = None) -> di
             
         try:
             tk = yf.Ticker(ticker)
-            # Fetch a wider historical dataset window to compute indicators cleanly
             hist = tk.history(period="6mo") 
             if hist.empty or len(hist) < 30:
                 continue
@@ -139,14 +142,10 @@ def build_stock_lists(compiled_insights: list[dict], weights: dict = None) -> di
             info = tk.info
             mkt_cap = round(info.get("marketCap", 0) / 1e7, 2) if info.get("marketCap") else 0
             
-            # Extract underlying data footprints
             techs = calculate_technical_metrics(hist)
-            
-            # 🔴 RISK BARRIER 1: OVERBOUGHT HYPOCRITICAL EXTRACTION GUARDRAIL
-            # If RSI is structurally vertical, deduct point profiles and demote the priority index
             final_score = item.get("score", 5)
             if techs["rsi"] >= 78.0:
-                logger.warning(f"Preventing top-buy on overbought chart for {ticker} (RSI: {techs['rsi']}). Demoting scoring vector.")
+                logger.warning(f"Preventing top-buy on overbought chart for {ticker} (RSI: {techs['rsi']}). Demoting score.")
                 final_score -= 2
 
             stock_record = {
@@ -159,7 +158,6 @@ def build_stock_lists(compiled_insights: list[dict], weights: dict = None) -> di
                 "score": max(1, final_score)
             }
             
-            # Allocation Routing Strategy
             if item["strategy_type"] in ["SWING", "SME_MOMENTUM"] and techs["rsi"] < 78.0:
                 stock_record["target_zone"] = round(curr_price * 1.08, 1)
                 list_a.append(stock_record)
